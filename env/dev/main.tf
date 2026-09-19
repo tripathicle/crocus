@@ -32,14 +32,12 @@ module "network" {
 #   tags             = var.tags
 # }
 
-# module "security" {
-#   source = "../../modules/security"
-#
-#   public_ips = var.public_ips
-#   firewalls  = var.firewalls
-#   key_vaults = var.key_vaults
-#   tags       = var.tags
-# }
+module "key_vault" {
+  source = "../../modules/key-vault"
+
+  key_vaults = var.key_vaults
+  tags       = var.tags
+}
 
 module "internal_load_balancer" {
   source = "../../modules/lb"

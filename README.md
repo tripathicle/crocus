@@ -16,31 +16,56 @@ This repository is designed to provision a repeatable Azure landing zone and app
 
 ## Architecture overview
 
-The design follows a standard hub-and-spoke pattern:
+The design follows a hub-and-spoke pattern with a private application tier and a public entry point.
 
 ```text
 Internet
    ↓
-Application Gateway (hub)
+Application Gateway
    ↓
-Frontend VMs (spoke)
+Frontend VMs
    ↓
 Internal Load Balancer
    ↓
-Backend VMs (spoke)
+Backend VMs
    ↓
-SQL workload on backend VM / data layer
+Database / Data Tier
 ```
 
+All application VMs use private IP addresses only. There is no public IP assigned to the frontend VMs, backend VMs, database tier, or the internal load balancer.
+
 ### Hub layer
-- Application Gateway
-- Bastion
-- shared public ingress/admin components
+- Azure Bastion for secure administrative access
+- shared connectivity services
+- optional Azure Firewall, VPN, or ExpressRoute components for future enterprise connectivity
 
 ### Spoke layer
-- frontend subnet for presentation-tier VMs
-- backend subnet for internal workloads
-- separate NSGs for tiered security boundaries
+- Application Gateway in the application/spoke VNet
+- frontend subnet
+- backend subnet
+- database subnet
+- internal Load Balancer
+- application workloads and private services
+
+This separation keeps the hub focused on shared connectivity and administration, while the spoke carries the application runtime and data path.
+
+### Internal Load Balancer
+
+The Internal Load Balancer (ILB) is private-only and is used to distribute traffic between backend VMs. It has a private frontend IP and is not internet-facing. Frontend VMs communicate with the ILB over private networking, which keeps application traffic off the public internet.
+
+### Private administration flow
+
+```text
+Administrator
+     ↓
+Azure Bastion
+     ↓
+Private IP
+     ↓
+VM
+```
+
+This is the reason Bastion is deployed in the hub: it provides a secure, controlled admin entry path to private workloads without exposing the workload tier directly to the internet.
 
 ## Environment structure
 
@@ -53,7 +78,7 @@ env/
 └── prod/
 ```
 
-Each environment folder contains Terraform variables and deployment inputs used to drive the same reusable modules with different values.
+The same reusable child modules are consumed by each environment with environment-specific inputs. This keeps the landing zone consistent while allowing each environment to vary in naming, sizing, and policy requirements.
 
 ## Root structure
 
@@ -98,56 +123,142 @@ The project is built with reusable child modules including:
 - `modules/nic` – NIC creation for VMs
 - `modules/vm` – Linux VM deployment
 - `modules/lb` – internal load balancing
-- `modules/gateway` – Azure Application Gateway
+- `modules/gateway` – Application Gateway
 - `modules/bastion` – Azure Bastion
 - `modules/public-ip` – public IP allocation
-- `modules/monitoring` – Log Analytics and Application Insights
+- `modules/monitoring` – Log Analytics, Application Insights, and Azure Monitor integration
 - `modules/sa` – storage account provisioning
 - `modules/rg` – resource group provisioning
+- `modules/security` – security-focused configuration and policy-aligned controls
+- `modules/private-access` – private DNS and private endpoint patterns
 
 The parent environment configuration in `env/dev/main.tf` wires these modules together.
 
 ## Current resource design
 
-The active design includes:
+The active Terraform state includes:
 
 - resource groups
 - storage account
 - hub and spoke VNets
-- subnets
+- dedicated subnets for application routing and workload separation
 - VNet peering
 - NSGs and subnet associations
 - NICs
-- 4 Linux VMs (`Standard_F1als_v7`)
+- 4 Linux VMs (`Standard_F1als_v7`) configured as:
+  - 2 frontend VMs
+  - 2 backend VMs
+- a managed SQL database/data service in the application/data path
 - 2 public IPs
 - 1 Application Gateway
 - 1 Bastion host
 - 1 internal load balancer
-- monitoring workspace and Application Insights
+- Log Analytics Workspace, Application Insights, and Azure Monitor-related telemetry resources
 
-## Why 2 NSGs
+There is no separate database VM in the current Terraform state, so the database/data tier is represented by the SQL resource layer rather than a dedicated database VM.
 
-The frontend and backend tiers are separated by different network security rules:
+## NSG flow
 
-- frontend NSG: allows public ingress traffic for application access
-- backend NSG: allows internal traffic and restricted data-layer access
+The network security pattern is explicit:
 
-This segmentation helps enforce a least-privilege network model.
+```text
+Internet
+   ↓
+Application Gateway
+   ↓
+Frontend NSG
+   ↓
+Frontend VMs
+   ↓
+Backend NSG
+   ↓
+Backend VMs
+   ↓
+Database NSG
+   ↓
+Database
+```
 
-## Why 2 public IPs
+This enforces least-privilege segmentation. Direct Internet-to-backend or Internet-to-database access is not intended.
 
-The current design uses two public IPs:
+## Public IP usage
 
-- 1 attached to the Application Gateway for internet traffic
-- 1 attached to Bastion for admin access
+The current design contains exactly two public IPs:
+
+- 1 Public IP → Application Gateway
+- 1 Public IP → Azure Bastion
+
+The following are intentionally not public:
+
+- No public IP on frontend VMs
+- No public IP on backend VMs
+- No public IP on database VM
+- No public IP on the internal Load Balancer
+
+## Key Vault and secret handling
+
+A Key Vault pattern is part of the intended security design for the platform. Application and database secrets should not be stored directly in Terraform `.tfvars` files. Secrets should be managed through Azure Key Vault and referenced via secure configuration patterns, RBAC, and managed identities where applicable.
+
+The repository contains the `modules/security` and `modules/private-access` patterns, and a planned Key Vault module is part of the long-term secure architecture for this landing zone.
+
+## Monitoring and observability
+
+The monitoring design includes:
+
+- Log Analytics Workspace
+- Application Insights
+- Azure Monitor
+- Metric alerts
+- Log alerts
+- Action Groups
+
+This allows centralized diagnostics, application telemetry, alerting, and operational visibility across the landing zone.
 
 ## VNet peering
 
-The hub and spoke VNets are peered through the `modules/network` module. The module loops through all VNets and creates a peering relationship for each pair, enabling communication between shared hub services and spoke workloads.
+The hub and spoke VNets are peered through the `modules/network` module. The module loops through all VNets and creates a peering relationship for each pair, enabling communication between shared hub services and spoke workloads while keeping the boundary clear and reusable.
 
 ## Backend configuration
 
 Terraform remote state is configured in `backend.tf`. It uses Azure Storage as the backend and requires real storage values before an actual environment deployment.
+
+## Production considerations
+
+For a production-ready deployment, the following should be considered and implemented where supported:
+
+- private-only VM networking
+- Key Vault integration and secret management
+- Azure Monitor, alerts, and Action Groups
+- backup and disaster recovery strategy
+- zone redundancy / multi-AZ deployment for supported resources
+- RBAC and least-privilege access
+- managed identities
+- Azure Policy enforcement
+- Defender for Cloud protections
+- private endpoints where applicable
+
+These are production hardening patterns and should be evaluated against the final Azure landing zone design, not assumed as fully implemented in every module unless explicitly configured in code.
+
+## Typical workflow
+
+```bash
+cd env/dev
+terraform init
+terraform validate
+terraform plan
+terraform apply
+```
+
+## Deployment notes
+
+- The project targets Azure resources in `japaneast`
+- The code is modular and environment-aware
+- Some services are intentionally left as placeholders or commented modules until the real Azure environment is configured
+- Real Azure backend values, subscription context, and credentials must be filled in before a live deployment
+
+## Summary
+
+Crocus is a modular Azure Terraform project for creating a secure hub-and-spoke infrastructure with a public ingress point, private application tiers, internal traffic distribution, monitoring, and reusable environment-driven deployment logic. The intended pattern is a three-tier application design in which the hub hosts shared admin and connectivity services, while the spoke contains the Application Gateway, frontend tier, backend tier, and data services behind private networking.
 
 ## Typical workflow
 
