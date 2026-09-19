@@ -179,11 +179,40 @@ This is the reason Bastion is deployed in the hub: it provides a secure, control
 
 The repository separates deployment logic by environment:
 
-```text
-env/
-├── dev/
-├── stage/
-└── prod/
+```mermaid
+flowchart TD
+    env["📁 env"]
+
+    subgraph dev["📁 dev"]
+        dev_main["📄 main.tf"]
+        dev_provider["📄 provider.tf"]
+        dev_tfvars["📄 terraform.tfvars"]
+        dev_example["📄 terraform.tfvars.example"]
+        dev_vars["📄 vars.tf"]
+    end
+
+    subgraph stage["📁 stage"]
+        stage_main["📄 main.tf"]
+        stage_provider["📄 provider.tf"]
+        stage_example["📄 terraform.tfvars.example"]
+        stage_vars["📄 vars.tf"]
+    end
+
+    subgraph prod["📁 prod"]
+        prod_main["📄 main.tf"]
+        prod_provider["📄 provider.tf"]
+        prod_example["📄 terraform.tfvars.example"]
+        prod_vars["📄 vars.tf"]
+    end
+
+    env --> dev
+    env --> stage
+    env --> prod
+
+    style env fill:#4dabf7,stroke:#1864ab,color:#fff
+    style dev fill:#f3f0ff,stroke:#b197fc,stroke-dasharray: 5 5
+    style stage fill:#fff9db,stroke:#ffd43b,stroke-dasharray: 5 5
+    style prod fill:#ffe3e3,stroke:#ff6b6b,stroke-dasharray: 5 5
 ```
 
 The same reusable child modules are consumed by each environment with environment-specific inputs. This keeps the landing zone consistent while allowing each environment to vary in naming, sizing, and policy requirements.
@@ -191,36 +220,36 @@ The same reusable child modules are consumed by each environment with environmen
 ## Root structure
 
 ```text
-.
-├── README.md
-├── LICENSE
-├── backend.tf
-├── env/
-│   ├── dev/
-│   ├── stage/
-│   └── prod/
-├── modules/
-│   ├── app/
-│   ├── bastion/
-│   ├── gateway/
-│   ├── lb/
-│   ├── monitoring/
-│   ├── network/
-│   ├── nic/
-│   ├── nsg/
-│   ├── nsg-association/
-│   ├── private-access/
-│   ├── public-ip/
-│   ├── rg/
-│   ├── sa/
-│   ├── security/
-│   └── vm/
-├── credential_example/
-├── .azuredevops/
-├── .github/
-└── docs/
-
-
+▼ 📦 crocus
+  › 📁 .azuredevops
+  › 🐙 .github
+  › 📁 credential_example
+  › 📚 docs
+  ▼ 📁 env
+    › 📁 dev
+    › 📁 prod
+    › 📁 stage
+  ▼ 📦 modules
+    › 🟩 app
+    › 📁 bastion
+    › 📁 gateway
+    › 📁 key-vault
+    › 📁 lb
+    › 📁 monitoring
+    › 📁 network
+    › 📁 nic
+    › 📁 nsg
+    › 📁 nsg-association
+    › 📁 private-access
+    › 📁 public-ip
+    › 📁 rg
+    › 📁 sa
+    › 📁 security
+    › 📁 vm
+  › 📄 .gitignore
+  › 📄 backend.tf
+  › 📄 LICENSE
+  › 📄 README.md
 ```
 
 ## Key Terraform modules
