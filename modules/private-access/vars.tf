@@ -3,6 +3,7 @@ variable "private_dns_zones" {
   type = map(object({
     name               = string
     resource_group_name = string
+    virtual_network_id = optional(string, null)
     tags               = optional(map(string), {})
   }))
 }

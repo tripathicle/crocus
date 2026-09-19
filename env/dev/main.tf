@@ -49,11 +49,12 @@ module "internal_load_balancer" {
         ip_addresses = local.backend_vm_private_ips
       }
       health_probe = merge(lb.health_probe, {
-        port = 8080
+        port = try(lb.health_probe.port, 8080)
+        path = try(lb.health_probe.path, "/health")
       })
       lb_rule = merge(lb.lb_rule, {
-        frontend_port = 8080
-        backend_port  = 8080
+        frontend_port = try(lb.lb_rule.frontend_port, 8080)
+        backend_port  = try(lb.lb_rule.backend_port, 8080)
       })
     })
   }
@@ -122,12 +123,12 @@ module "gateway" {
         name        = gateway.backend_address_pool.name
         ip_addresses = local.frontend_vm_private_ips
       }
-      health_probe = {
-        name     = "agw-health-probe"
-        protocol = "Http"
-        port     = 80
-        path     = "/"
-      }
+      health_probe = merge(try(gateway.health_probe, {}), {
+        name     = try(gateway.health_probe.name, "agw-health-probe")
+        protocol = try(gateway.health_probe.protocol, "Http")
+        port     = try(gateway.health_probe.port, 80)
+        path     = try(gateway.health_probe.path, "/health")
+      })
     })
   }
   tags = var.tags
