@@ -95,13 +95,13 @@ module "gateway" {
   tags                 = var.tags
 }
 
-# module "private_access" {
-#   source = "../../modules/private-access"
-#
-#   private_dns_zones = var.private_dns_zones
-#   private_endpoints = var.private_endpoints
-#   tags              = var.tags
-# }
+module "private_access" {
+  source = "../../modules/private-access"
+
+  private_dns_zones = var.private_dns_zones
+  private_endpoints = var.private_endpoints
+  tags              = var.tags
+}
 
 module "bastion" {
   source = "../../modules/bastion"

@@ -18,6 +18,8 @@ This repository is designed to provision a repeatable Azure landing zone and app
 
 The design follows a hub-and-spoke pattern with a private application tier and a public entry point.
 
+### Traffic path
+
 ```text
 Internet
    ↓
@@ -29,8 +31,12 @@ Internal Load Balancer
    ↓
 Backend VMs
    ↓
-Database / Data Tier
+Private Endpoint
+   ↓
+Azure SQL
 ```
+
+This is the actual request path. The App Gateway and the Internal Load Balancer are the traffic path components. The private endpoint is the private access point to Azure SQL, not a network hop in the same sense as a load balancer.
 
 All application VMs use private IP addresses only. There is no public IP assigned to the frontend VMs, backend VMs, database tier, or the internal load balancer.
 
@@ -43,7 +49,7 @@ All application VMs use private IP addresses only. There is no public IP assigne
 - Application Gateway in the application/spoke VNet
 - frontend subnet
 - backend subnet
-- database subnet
+- database/private access subnet
 - internal Load Balancer
 - application workloads and private services
 
@@ -52,6 +58,29 @@ This separation keeps the hub focused on shared connectivity and administration,
 ### Internal Load Balancer
 
 The Internal Load Balancer (ILB) is private-only and is used to distribute traffic between backend VMs. It has a private frontend IP and is not internet-facing. Frontend VMs communicate with the ILB over private networking, which keeps application traffic off the public internet.
+
+### Security model
+
+NSGs are security policy attachments, not traffic hops.
+
+```text
+Frontend Subnet
+   ↓
+Frontend NSG
+
+Backend Subnet
+   ↓
+Backend NSG
+
+Private Endpoint Subnet
+   ↓
+Data NSG
+```
+
+This means:
+- App Gateway / ILB = path
+- NSG = security rule boundary
+- Private Endpoint = private connectivity to Azure SQL
 
 ### Private administration flow
 
@@ -159,24 +188,30 @@ There is no separate database VM in the current Terraform state, so the database
 
 ## NSG flow
 
-The network security pattern is explicit:
+The network security pattern is explicit, but NSGs are not traffic hops.
 
 ```text
 Internet
    ↓
 Application Gateway
    ↓
-Frontend NSG
-   ↓
 Frontend VMs
    ↓
-Backend NSG
+Internal Load Balancer
    ↓
 Backend VMs
    ↓
-Database NSG
+Private Endpoint
    ↓
-Database
+Azure SQL
+```
+
+In parallel, the subnet security policy is applied as:
+
+```text
+Frontend Subnet → Frontend NSG
+Backend Subnet → Backend NSG
+Private Endpoint Subnet → Data NSG
 ```
 
 This enforces least-privilege segmentation. Direct Internet-to-backend or Internet-to-database access is not intended.
@@ -199,7 +234,7 @@ The following are intentionally not public:
 
 A Key Vault pattern is part of the intended security design for the platform. Application and database secrets should not be stored directly in Terraform `.tfvars` files. Secrets should be managed through Azure Key Vault and referenced via secure configuration patterns, RBAC, and managed identities where applicable.
 
-The repository contains the `modules/security` and `modules/private-access` patterns, and a planned Key Vault module is part of the long-term secure architecture for this landing zone.
+The repository contains the `modules/security` and `modules/private-access` patterns, and the dedicated `modules/key-vault` module is now part of the secure architecture for this landing zone.
 
 ## Monitoring and observability
 
