@@ -51,16 +51,13 @@ resource "azurerm_private_endpoint" "this" {
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "this" {
-  for_each = {
-    for key, zone in var.private_dns_zones : key => zone
-    if zone.virtual_network_id != null
-  }
+  for_each = toset(keys(var.private_dns_zones))
 
   name                  = "${each.key}-vnet-link"
-  resource_group_name   = each.value.resource_group_name
+  resource_group_name   = var.private_dns_zones[each.key].resource_group_name
   private_dns_zone_name = azurerm_private_dns_zone.this[each.key].name
-  virtual_network_id    = each.value.virtual_network_id
+  virtual_network_id    = var.private_dns_zones[each.key].virtual_network_id
   registration_enabled  = false
 
-  tags = merge(var.tags, lookup(each.value, "tags", {}))
+  tags = merge(var.tags, lookup(var.private_dns_zones[each.key], "tags", {}))
 }

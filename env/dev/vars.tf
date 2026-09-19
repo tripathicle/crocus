@@ -86,58 +86,6 @@ variable "vnets" {
   }
 }
 
-variable "app_service_plan" {
-  description = "App service plans for the 3-tier monolithic web application"
-  type = map(object({
-    name                = string
-    resource_group_name = string
-    location            = string
-    os_type             = string
-    sku_name            = string
-    tags                = optional(map(string), {})
-  }))
-}
-
-variable "linux_web_apps" {
-  description = "Web application for the presentation layer"
-  type = map(object({
-    name                = string
-    resource_group_name = string
-    location            = string
-    service_plan_id     = string
-    https_only          = optional(bool, true)
-    site_config = optional(object({
-      always_on = optional(bool, true)
-    }), {})
-    tags = optional(map(string), {})
-  }))
-}
-
-variable "sql_servers" {
-  description = "SQL server for the data tier"
-  type = map(object({
-    name                         = string
-    resource_group_name          = string
-    location                     = string
-    version                      = string
-    administrator_login          = string
-    administrator_login_password = string
-    minimum_tls_version          = optional(string, "1.2")
-    tags                         = optional(map(string), {})
-  }))
-}
-
-variable "sql_databases" {
-  description = "Database tier for the monolithic application"
-  type = map(object({
-    name      = string
-    server_id = string
-    sku_name  = string
-    collation = optional(string, "SQL_Latin1_General_CP1_CI_AS")
-    tags      = optional(map(string), {})
-  }))
-}
-
 variable "public_ips" {
   description = "Public IPs used for ingress and administrative access."
   type = map(object({
@@ -167,15 +115,16 @@ variable "public_ips" {
 # }
 
 variable "load_balancers" {
-  description = "Map of Azure load balancers for the backend tier"
+  description = "Map of Azure load balancers for the backend tier. Subnet relationships are resolved from the network module output by key."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
+    vnet_key            = string
+    subnet_key          = string
     sku                 = optional(string, "Standard")
     frontend_ip_configuration = object({
       name                 = string
-      subnet_id            = string
       private_ip_address   = string
       private_ip_addresses = optional(list(string), [])
     })
@@ -183,9 +132,9 @@ variable "load_balancers" {
       name = string
     })
     health_probe = object({
-      name = string
+      name     = string
       protocol = optional(string, "Tcp")
-      port = number
+      port     = number
     })
     lb_rule = object({
       name                           = string
@@ -285,23 +234,24 @@ variable "application_insights" {
 }
 
 variable "application_gateways" {
-  description = "Application Gateway for public ingress and TLS termination. Keep traffic patterns explicit and compliant with enterprise network rules."
+  description = "Application Gateway for public ingress and TLS termination. VNet and public IP relationships are resolved from module outputs by key."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
+    vnet_key            = string
+    subnet_key          = string
+    public_ip_key       = string
     sku = object({
       name     = string
       tier     = string
       capacity = number
     })
     gateway_ip_configuration = object({
-      name      = string
-      subnet_id = string
+      name = string
     })
     frontend_ip_configuration = object({
-      name                 = string
-      public_ip_address_id = string
+      name = string
     })
     frontend_port = object({
       name = string
@@ -336,21 +286,22 @@ variable "application_gateways" {
 
   validation {
     condition = alltrue([
-      for key, gateway in var.application_gateways : length(trimspace(gateway.name)) > 0 && gateway.sku.capacity >= 1 && gateway.frontend_port.port >= 1 && gateway.frontend_port.port <= 65535
+      for key, gateway in var.application_gateways : length(trimspace(gateway.name)) > 0 && length(trimspace(gateway.vnet_key)) > 0 && length(trimspace(gateway.subnet_key)) > 0 && length(trimspace(gateway.public_ip_key)) > 0 && gateway.sku.capacity >= 1 && gateway.frontend_port.port >= 1 && gateway.frontend_port.port <= 65535
     ])
-    error_message = "Application Gateway names must be non-empty, capacity must be at least 1, and frontend ports must be valid TCP/UDP ports."
+    error_message = "Application Gateway names must be non-empty, VNet/subnet/public IP keys must be defined, capacity must be at least 1, and frontend ports must be valid TCP/UDP ports."
   }
 }
 
 variable "network_interfaces" {
-  description = "NIC definitions for VM attachments. IP configuration values must be valid and specific to the target subnet."
+  description = "NIC definitions for VM attachments. Subnet relationships are resolved from the network module output by VNet/subnet key."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
+    vnet_key            = string
+    subnet_key          = string
     ip_configuration = object({
       name                          = string
-      subnet_id                     = string
       private_ip_address_allocation = string
       private_ip_address            = optional(string, null)
     })
@@ -359,22 +310,23 @@ variable "network_interfaces" {
 
   validation {
     condition = alltrue([
-      for key, nic in var.network_interfaces : length(trimspace(nic.name)) > 0 && contains(["Dynamic", "Static"], nic.ip_configuration.private_ip_address_allocation)
+      for key, nic in var.network_interfaces : length(trimspace(nic.name)) > 0 && contains(["Dynamic", "Static"], nic.ip_configuration.private_ip_address_allocation) && length(trimspace(nic.vnet_key)) > 0 && length(trimspace(nic.subnet_key)) > 0
     ])
-    error_message = "NIC names must be non-empty and private IP allocation must be Dynamic or Static."
+    error_message = "NIC names must be non-empty, private IP allocation must be Dynamic or Static, and both VNet and subnet keys must be provided."
   }
 }
 
 variable "linux_virtual_machines" {
-  description = "Linux VM definitions for the workload tier. Passwords and admin values must be managed securely and never hardcoded in source control."
+  description = "Linux VM definitions for the workload tier. The NIC relationship is resolved from the module output by key to keep the deployment reusable."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
     size                = string
     admin_username      = string
-    admin_password      = string
-    network_interface_id = string
+    admin_password      = optional(string, null)
+    admin_ssh_key       = optional(string, null)
+    nic_key             = string
     custom_data         = optional(string, null)
     os_disk = object({
       caching              = string
@@ -391,50 +343,52 @@ variable "linux_virtual_machines" {
 
   validation {
     condition = alltrue([
-      for key, vm in var.linux_virtual_machines : length(trimspace(vm.name)) > 0 && length(trimspace(vm.admin_username)) > 0 && (length(trimspace(coalesce(vm.admin_password, ""))) >= 12 || vm.admin_ssh_key != null) && length(trimspace(vm.size)) > 0
+      for key, vm in var.linux_virtual_machines : length(trimspace(vm.name)) > 0 && length(trimspace(vm.admin_username)) > 0 && length(trimspace(vm.nic_key)) > 0 && (length(trimspace(coalesce(vm.admin_password, ""))) >= 12 || vm.admin_ssh_key != null) && length(trimspace(vm.size)) > 0
     ])
-    error_message = "VM names and admin usernames must be non-empty; either a secure password of at least 12 characters or an SSH key must be supplied, and size must be defined."
+    error_message = "VM names and admin usernames must be non-empty; a valid NIC key must be supplied; either a secure password of at least 12 characters or an SSH key must be supplied, and size must be defined."
   }
 }
 
-variable "subnet_network_security_group_associations" {
-  description = "Subnet-to-NSG associations. Each association must map a valid subnet to a valid NSG."
+variable "subnet_nsg_associations" {
+  description = "Map of subnet names to NSG names. The child association module resolves the Azure IDs from upstream module outputs."
   type = map(object({
-    subnet_id                 = string
-    network_security_group_id = string
+    subnet_name                = string
+    network_security_group_name = string
   }))
 
   validation {
     condition = alltrue([
-      for key, association in var.subnet_network_security_group_associations : length(trimspace(association.subnet_id)) > 0 && length(trimspace(association.network_security_group_id)) > 0
+      for key, association in var.subnet_nsg_associations : length(trimspace(association.subnet_name)) > 0 && length(trimspace(association.network_security_group_name)) > 0
     ])
-    error_message = "Every subnet-to-NSG association must include both a valid subnet ID and a valid NSG ID."
+    error_message = "Every subnet-to-NSG association must define both a valid subnet name and a valid NSG name."
   }
 }
 
 variable "private_dns_zones" {
-  description = "Private DNS zones used for Azure PaaS private access. Keep zone names aligned with the private endpoint design."
+  description = "Private DNS zones used for Azure PaaS private access. VNet link relationships are resolved from the network module output by key."
   type = map(object({
     name                = string
     resource_group_name = string
+    vnet_key            = string
     tags                = optional(map(string), {})
   }))
 
   validation {
     condition = alltrue([
-      for key, zone in var.private_dns_zones : length(trimspace(zone.name)) > 0 && can(regex("\\.$", zone.name))
+      for key, zone in var.private_dns_zones : length(trimspace(zone.name)) > 0 && can(regex("\\.$", zone.name)) && length(trimspace(zone.vnet_key)) > 0
     ])
-    error_message = "Private DNS zone names must be non-empty and fully qualified domain names."
+    error_message = "Private DNS zone names must be non-empty and fully qualified domain names; a valid VNet key is required for the VNet link."
   }
 }
 
 variable "private_endpoints" {
-  description = "Private endpoints for Azure SQL and other PaaS services. Private access must be explicitly controlled and documented."
+  description = "Private endpoints for Azure SQL and other PaaS services. VNet/subnet relationships are resolved from the network module output by key."
   type = map(object({
     name                = string
     location            = string
     resource_group_name = string
-    subnet_id           = string
+    vnet_key            = string
+    subnet_key          = string
     private_service_connection = object({
       name                           = string
       private_connection_resource_id = string
@@ -451,27 +405,28 @@ variable "private_endpoints" {
 
   validation {
     condition = alltrue([
-      for key, endpoint in var.private_endpoints : length(trimspace(endpoint.name)) > 0 && length(trimspace(endpoint.subnet_id)) > 0 && length(endpoint.private_service_connection.subresource_names) > 0
+      for key, endpoint in var.private_endpoints : length(trimspace(endpoint.name)) > 0 && length(trimspace(endpoint.vnet_key)) > 0 && length(trimspace(endpoint.subnet_key)) > 0 && length(endpoint.private_service_connection.subresource_names) > 0
     ])
-    error_message = "Private endpoint names, subnet IDs, and service connection subresource names must be defined."
+    error_message = "Private endpoint names, VNet/subnet keys, and service connection subresource names must be defined."
   }
 }
 
 variable "bastions" {
-  description = "Azure Bastion hosts for secure administrative access. Public access should be restricted to approved network paths only."
+  description = "Azure Bastion hosts for secure administrative access. VNet/subnet and public IP relationships are resolved from outputs by key."
   type = map(object({
-    name                 = string
-    resource_group_name  = string
-    location             = string
-    subnet_id            = string
-    public_ip_address_id = string
-    tags                 = optional(map(string), {})
+    name                = string
+    resource_group_name = string
+    location            = string
+    vnet_key            = string
+    subnet_key          = string
+    public_ip_key       = string
+    tags                = optional(map(string), {})
   }))
 
   validation {
     condition = alltrue([
-      for key, bastion in var.bastions : length(trimspace(bastion.name)) > 0 && length(trimspace(bastion.subnet_id)) > 0 && length(trimspace(bastion.public_ip_address_id)) > 0
+      for key, bastion in var.bastions : length(trimspace(bastion.name)) > 0 && length(trimspace(bastion.vnet_key)) > 0 && length(trimspace(bastion.subnet_key)) > 0 && length(trimspace(bastion.public_ip_key)) > 0
     ])
-    error_message = "Bastion names, subnet IDs, and public IP IDs must be defined for secure access."
+    error_message = "Bastion names, VNet/subnet keys, and public IP keys must be defined for secure access."
   }
 }

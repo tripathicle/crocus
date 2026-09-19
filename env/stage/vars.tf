@@ -64,17 +64,31 @@ variable "vnets" {
   }))
 }
 
-variable "load_balancers" {
-  description = "Map of Azure load balancers for the backend tier"
+variable "public_ips" {
+  description = "Public IPs used for ingress and administrative access."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
     sku                 = optional(string, "Standard")
+    allocation_method   = optional(string, "Static")
+    zones               = optional(list(string), [])
+    tags                = optional(map(string), {})
+  }))
+}
+
+variable "load_balancers" {
+  description = "Map of Azure load balancers for the backend tier. Subnet relationships are resolved from the network module output by key."
+  type = map(object({
+    name                = string
+    resource_group_name = string
+    location            = string
+    vnet_key            = string
+    subnet_key          = string
+    sku                 = optional(string, "Standard")
     frontend_ip_configuration = object({
-      name                 = string
-      subnet_id            = string
-      private_ip_address   = string
+      name               = string
+      private_ip_address = string
       private_ip_addresses = optional(list(string), [])
     })
     backend_address_pool = object({
@@ -120,14 +134,15 @@ variable "network_security_groups" {
 }
 
 variable "network_interfaces" {
-  description = "NIC definitions for VM attachments"
+  description = "NIC definitions for VM attachments. Subnet relationships are resolved from the network module output by key."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
+    vnet_key            = string
+    subnet_key          = string
     ip_configuration = object({
       name                          = string
-      subnet_id                     = string
       private_ip_address_allocation = string
       private_ip_address            = optional(string, null)
     })
@@ -161,11 +176,11 @@ variable "linux_virtual_machines" {
   sensitive = true
 }
 
-variable "subnet_network_security_group_associations" {
-  description = "Subnet-to-NSG associations"
+variable "subnet_nsg_associations" {
+  description = "Map of subnet names to NSG names. The child association module resolves the Azure IDs from upstream module outputs."
   type = map(object({
-    subnet_id                 = string
-    network_security_group_id = string
+    subnet_name                = string
+    network_security_group_name = string
   }))
   default = {}
 }
@@ -195,23 +210,24 @@ variable "application_insights" {
 }
 
 variable "application_gateways" {
-  description = "Application Gateway for public ingress"
+  description = "Application Gateway for public ingress. VNet and public IP relationships are resolved from module outputs by key."
   type = map(object({
     name                = string
     resource_group_name = string
     location            = string
+    vnet_key            = string
+    subnet_key          = string
+    public_ip_key       = string
     sku = object({
       name     = string
       tier     = string
       capacity = number
     })
     gateway_ip_configuration = object({
-      name      = string
-      subnet_id = string
+      name = string
     })
     frontend_ip_configuration = object({
-      name                 = string
-      public_ip_address_id = string
+      name = string
     })
     frontend_port = object({
       name = string
@@ -244,14 +260,48 @@ variable "application_gateways" {
   }))
 }
 
-variable "bastions" {
-  description = "Azure Bastion hosts for secure SSH/RDP access"
+variable "private_dns_zones" {
+  description = "Private DNS zones used for Azure PaaS private access. VNet link relationships are resolved from the network module output by key."
   type = map(object({
-    name                 = string
-    resource_group_name  = string
-    location             = string
-    subnet_id            = string
-    public_ip_address_id = string
-    tags                 = optional(map(string), {})
+    name                = string
+    resource_group_name = string
+    vnet_key            = string
+    tags                = optional(map(string), {})
+  }))
+}
+
+variable "private_endpoints" {
+  description = "Private endpoints for Azure SQL and other PaaS services. VNet/subnet relationships are resolved from the network module output by key."
+  type = map(object({
+    name                = string
+    location            = string
+    resource_group_name = string
+    vnet_key            = string
+    subnet_key          = string
+    private_service_connection = object({
+      name                           = string
+      private_connection_resource_id = string
+      is_manual_connection           = optional(bool, false)
+      subresource_names              = list(string)
+      request_message                = optional(string, null)
+    })
+    private_dns_zone_group = optional(object({
+      name                 = string
+      private_dns_zone_ids = list(string)
+    }), null)
+    tags = optional(map(string), {})
+  }))
+}
+
+variable "bastions" {
+  description = "Azure Bastion hosts for secure SSH/RDP access. VNet/subnet and public IP relationships are resolved from outputs by key."
+  type = map(object({
+    name                = string
+    resource_group_name = string
+    location            = string
+    vnet_key            = string
+    subnet_key          = string
+    public_ip_key       = string
+    tags                = optional(map(string), {})
   }))
 }
