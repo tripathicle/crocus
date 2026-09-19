@@ -1,162 +1,172 @@
+# Crocus Terraform Azure Infrastructure
 
-# Crocus: Enterprise-Grade Azure Infrastructure & DevOps Automation 
+Crocus is a Terraform-based Azure infrastructure repository built for a secure hub-and-spoke architecture in the `japaneast` region. The project is organized around reusable child modules and environment-specific inputs so deployment logic can be reused across `dev`, `stage`, and `prod` without duplicating infrastructure code.
 
----
+## Purpose
 
-## Overview
-**Crocus** is a **modular, secure, and enterprise-ready Infrastructure as Code (IaC) framework** built with **Terraform** and **Azure DevOps**.  
+This repository is designed to provision a repeatable Azure landing zone and application platform. It supports:
 
-It provisions, manages, and governs complete Azure environments — from **foundational landing zones** to **complex microservices platforms** — while following strict **DevSecOps principles**.
+- hub-and-spoke network segregation
+- public ingress through an Application Gateway
+- secure administrative access through Bastion
+- frontend and backend workload tiers
+- internal traffic distribution with a load balancer
+- centralized monitoring with Log Analytics and Application Insights
+- modular Terraform structure for reuse and maintenance
 
-This repository acts as the **parent module / control plane**, orchestrating a library of **generic, versioned Terraform modules** to deliver consistent and compliant infrastructure across **Sandbox, Development, and Production** environments.
+## Architecture overview
 
----
+The design follows a standard hub-and-spoke pattern:
 
-## 🚦 Getting Started
+```text
+Internet
+   ↓
+Application Gateway (hub)
+   ↓
+Frontend VMs (spoke)
+   ↓
+Internal Load Balancer
+   ↓
+Backend VMs (spoke)
+   ↓
+SQL workload on backend VM / data layer
+```
 
-### Prerequisites
-- Azure subscription with **Contributor** role  
-- Azure DevOps project configured  
-- Terraform `>= 1.0.0` installed locally  
-- Azure CLI installed & authenticated  
+### Hub layer
+- Application Gateway
+- Bastion
+- shared public ingress/admin components
 
-### Deploying (Dev Environment)
+### Spoke layer
+- frontend subnet for presentation-tier VMs
+- backend subnet for internal workloads
+- separate NSGs for tiered security boundaries
+
+## Environment structure
+
+The repository separates deployment logic by environment:
+
+```text
+env/
+├── dev/
+├── stage/
+└── prod/
+```
+
+Each environment folder contains Terraform variables and deployment inputs used to drive the same reusable modules with different values.
+
+## Root structure
+
+```text
+.
+├── README.md
+├── LICENSE
+├── backend.tf
+├── env/
+│   ├── dev/
+│   ├── stage/
+│   └── prod/
+├── modules/
+│   ├── app/
+│   ├── bastion/
+│   ├── gateway/
+│   ├── lb/
+│   ├── monitoring/
+│   ├── network/
+│   ├── nic/
+│   ├── nsg/
+│   ├── nsg-association/
+│   ├── private-access/
+│   ├── public-ip/
+│   ├── rg/
+│   ├── sa/
+│   ├── security/
+│   └── vm/
+├── credential_example/
+├── .azuredevops/
+├── .github/
+└── docs/
+```
+
+## Key Terraform modules
+
+The project is built with reusable child modules including:
+
+- `modules/network` – VNets, subnets, and VNet peering
+- `modules/nsg` – security group definitions
+- `modules/nsg-association` – subnet-to-NSG mapping
+- `modules/nic` – NIC creation for VMs
+- `modules/vm` – Linux VM deployment
+- `modules/lb` – internal load balancing
+- `modules/gateway` – Azure Application Gateway
+- `modules/bastion` – Azure Bastion
+- `modules/public-ip` – public IP allocation
+- `modules/monitoring` – Log Analytics and Application Insights
+- `modules/sa` – storage account provisioning
+- `modules/rg` – resource group provisioning
+
+The parent environment configuration in `env/dev/main.tf` wires these modules together.
+
+## Current resource design
+
+The active design includes:
+
+- resource groups
+- storage account
+- hub and spoke VNets
+- subnets
+- VNet peering
+- NSGs and subnet associations
+- NICs
+- 4 Linux VMs (`Standard_F1als_v7`)
+- 2 public IPs
+- 1 Application Gateway
+- 1 Bastion host
+- 1 internal load balancer
+- monitoring workspace and Application Insights
+
+## Why 2 NSGs
+
+The frontend and backend tiers are separated by different network security rules:
+
+- frontend NSG: allows public ingress traffic for application access
+- backend NSG: allows internal traffic and restricted data-layer access
+
+This segmentation helps enforce a least-privilege network model.
+
+## Why 2 public IPs
+
+The current design uses two public IPs:
+
+- 1 attached to the Application Gateway for internet traffic
+- 1 attached to Bastion for admin access
+
+## VNet peering
+
+The hub and spoke VNets are peered through the `modules/network` module. The module loops through all VNets and creates a peering relationship for each pair, enabling communication between shared hub services and spoke workloads.
+
+## Backend configuration
+
+Terraform remote state is configured in `backend.tf`. It uses Azure Storage as the backend and requires real storage values before an actual environment deployment.
+
+## Typical workflow
 
 ```bash
-# Clone the repository
-git clone https://github.com/tripathicle/Crocus.git
-cd crocus-iac-env
-
-# Navigate to environment
-cd environments/development
-
-# Initialize Terraform
+cd env/dev
 terraform init
-
-# Plan & Apply (local testing only; use pipeline for official)
-terraform plan -out=tfplan
-terraform apply tfplan
-
+terraform validate
+terraform plan
+terraform apply
 ```
 
----
+## Deployment notes
 
-## Features & Highlights
+- The project targets Azure resources in `japaneast`
+- The code is modular and environment-aware
+- Some services are intentionally left as placeholders or commented modules until the real Azure environment is configured
+- Real Azure backend values, subscription context, and credentials must be filled in before a live deployment
 
-- **Generic & Modular IaC**  
-  - Dynamic blocks and `for_each` loops for all Azure services.  
-  - Modules for Management Groups, Subscriptions, Networking, AKS, App Gateway, Front Door, etc.  
+## Summary
 
-- **End-to-End DevSecOps Pipeline**  
-  - Automated CI/CD with:
-    - Linting → `tflint`
-    - Security scans → `checkov`, `tfsec`, `trufflehog`
-    - Compliance checks → Chef InSpec
-    - Quality gates → SonarQube  
-
-- **Multi-Environment Strategy**  
-  - Blueprints for Sandbox, Development, and Production with approvals and environment-specific variables.  
-
-- **Security & Governance**  
-  - Azure Policies (built-in + custom), aligned with **CIS Benchmarks & GDPR**.  
-  - Remote state files encrypted with **Customer Managed Keys (CMK)**.  
-
-- **Microservices & AKS Ready**  
-  - AKS landing zones, ACR, Key Vault, Bastion Hosts.  
-  - GitOps (ArgoCD) & Helm adoption planned.  
-
-- **Operational Excellence**  
-  - Prometheus, Grafana, and Datadog monitoring.  
-  - Automated backup & rollback pipelines for resilience.  
-
----
-
-## Architecture Overview
-
-### Multi-Repository Strategy
-- **Generic Modules** → `Parent-Child-Env Modules`  
-  Each Azure service has its own dedicated, versioned Terraform module.  
-
-- **This Repository** → `crocus-iac-env-solutions`  
-  Acts as the **root module** that:
-  - Calls generic modules
-  - Injects environment-specific configs
-  - Defines dependencies
-
-### High-Level Infrastructure Stack
-
-```
-Management Groups
-- └── Subscriptions 
--  └── Resource Groups
--  └── VNets & Subnets
--  ├── VPN Gateways
--  ├── Load Balancers
--  ├── Application Gateway / Front Door / Traffic-Manager
--  └── AKS / ACR / Key Vault / Bastion
-
-```
-
-Landing zones are provisioned with a **hierarchical structure**, ensuring **isolation, security, and compliance**.
-
----
-
-## Provisioning Flow
-
-### Adding New Infrastructure (e.g., VM)
-1. **Branch** → Create a feature branch from `main`.  
-2. **Code** → Update Terraform configs to call required modules.  
-3. **PR & Checks** → Raise a PR to trigger pipeline:
-   - `terraform validate`, `tflint`, `checkov`, `tfsec`, `trufflehog`
-   - Chef InSpec compliance tests  
-4. **Plan & Approve** → `terraform plan` reviewed & approved (GenTest Job).  
-5. **Apply** → Changes applied to Development.  
-6. **Promote to Prod** → Additional governance approvals required.  
-
-### Application Deployment (Monolithic & Microservices)
-- **CI** → PR triggers build, scans (SonarQube, Checkmarx), and artifact publishing to **Azure Artifacts**.  
-- **CD** → Artifacts deployed across environments (Dev → Test → QA → Prod).  
-- **Governance** → Manual approvals at each promotion stage.  
-- **Rollback** → Dedicated rollback pipeline redeploys last stable artifact.  
-
----
-
-## Technology Stack
-
-| Category               | Tools / Services                                                                 |
-|-------------------------|----------------------------------------------------------------------------------|
-| **Infrastructure**     | Terraform                                                                        |
-| **CI/CD**              | Azure DevOps (YAML Pipelines)                                                    |
-| **Code Repo**          | Azure Repos (Git)                                                                |
-| **Remote State**       | Azure Blob Storage (CMK encryption)                                              |
-| **Secrets Mgmt**       | Azure Key Vault                                                                  |
-| **Security Scanning**  | Checkov, TFSEC, TruffleHog                                                       |
-| **Quality & SAST**     | SonarQube, Checkmarx                                                             |
-| **Compliance**         | Chef InSpec                                                                      |
-| **Artifacts**          | Azure Artifacts / JFrog / Nexus                                                  |
-| **Containers**         | ACR, AKS, Helm (POC), ArgoCD (Planned)                                           |
-| **Monitoring**         | Prometheus, Grafana, Datadog                                                     |
-| **Backup & DR**        | Azure Backup                                                                     |
-
----
-
-## Repository Structure
-
-## Contributing
-We follow a trunk-based development strategy for infrastructure code and a GitFlow-like strategy for application code.
-
-1. Fork the repository.
-2. Create your feature branch:
-   ```bash
-   git checkout -b feature/amazing-feature
-   git commit -m 'Add some amazing feature'
-   git push origin feature/amazing-feature
-
-
-## 📜 License
-This project is proprietary and licensed under the [customer's agreement](./LICENSE).  
-Not publicly distributed
-
-
-
+Crocus is a modular Azure Terraform project for creating a secure hub-and-spoke infrastructure with ingress, frontend/backend workload tiers, internal distribution, monitoring, and reusable environment-driven deployment logic. It is structured to grow into a more complete enterprise platform while keeping the infrastructure code organized and reusable.
 
