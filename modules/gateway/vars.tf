@@ -38,6 +38,12 @@ variable "application_gateways" {
       name         = string
       ip_addresses = optional(list(string), [])
     })
+    health_probe = optional(object({
+      name     = string
+      protocol = optional(string, "Http")
+      port     = number
+      path     = optional(string, "/")
+    }), null)
     backend_http_settings = object({
       name                  = string
       cookie_based_affinity = string

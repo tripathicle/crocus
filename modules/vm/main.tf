@@ -20,10 +20,18 @@ resource "azurerm_linux_virtual_machine" "this" {
   location            = each.value.location
   size                = each.value.size
   admin_username      = each.value.admin_username
-  admin_password      = each.value.admin_password
-  disable_password_authentication = false
+  admin_password      = each.value.admin_ssh_key != null ? null : each.value.admin_password
+  disable_password_authentication = each.value.admin_ssh_key != null
   network_interface_ids = [each.value.network_interface_id]
   custom_data = each.value.custom_data != null ? base64encode(each.value.custom_data) : null
+
+  dynamic "admin_ssh_key" {
+    for_each = each.value.admin_ssh_key != null ? [each.value.admin_ssh_key] : []
+    content {
+      username   = each.value.admin_username
+      public_key = admin_ssh_key.value
+    }
+  }
 
   os_disk {
     caching              = each.value.os_disk.caching

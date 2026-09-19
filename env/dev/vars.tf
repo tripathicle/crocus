@@ -391,9 +391,9 @@ variable "linux_virtual_machines" {
 
   validation {
     condition = alltrue([
-      for key, vm in var.linux_virtual_machines : length(trimspace(vm.name)) > 0 && length(trimspace(vm.admin_username)) > 0 && length(trimspace(vm.admin_password)) >= 12 && length(trimspace(vm.size)) > 0
+      for key, vm in var.linux_virtual_machines : length(trimspace(vm.name)) > 0 && length(trimspace(vm.admin_username)) > 0 && (length(trimspace(coalesce(vm.admin_password, ""))) >= 12 || vm.admin_ssh_key != null) && length(trimspace(vm.size)) > 0
     ])
-    error_message = "VM names and admin usernames must be non-empty; admin passwords must be at least 12 characters long and stored securely."
+    error_message = "VM names and admin usernames must be non-empty; either a secure password of at least 12 characters or an SSH key must be supplied, and size must be defined."
   }
 }
 

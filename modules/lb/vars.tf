@@ -12,7 +12,8 @@ variable "load_balancers" {
       private_ip_addresses = optional(list(string), [])
     })
     backend_address_pool = object({
-      name = string
+      name         = string
+      ip_addresses = optional(list(string), [])
     })
     health_probe = object({
       name     = string

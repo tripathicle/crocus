@@ -38,12 +38,23 @@ resource "azurerm_application_gateway" "this" {
     ip_addresses = lookup(each.value.backend_address_pool, "ip_addresses", [])
   }
 
+  probe {
+    name                = each.value.health_probe.name
+    protocol            = each.value.health_probe.protocol
+    port                = each.value.health_probe.port
+    path                = each.value.health_probe.path
+    interval            = 30
+    timeout             = 30
+    unhealthy_threshold = 3
+  }
+
   backend_http_settings {
     name                  = each.value.backend_http_settings.name
     cookie_based_affinity = each.value.backend_http_settings.cookie_based_affinity
     port                  = each.value.backend_http_settings.port
     protocol              = each.value.backend_http_settings.protocol
     request_timeout       = each.value.backend_http_settings.request_timeout
+    probe_name            = each.value.health_probe.name
   }
 
   request_routing_rule {

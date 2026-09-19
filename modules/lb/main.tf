@@ -32,6 +32,22 @@ resource "azurerm_lb_backend_address_pool" "this" {
   name            = each.value.backend_address_pool.name
 }
 
+resource "azurerm_lb_backend_address_pool_address" "this" {
+  for_each = merge([
+    for lb_key, lb in var.load_balancers : {
+      for ip_index, ip in lookup(lb.backend_address_pool, "ip_addresses", []) :
+      "${lb_key}-${ip_index}" => {
+        lb_key     = lb_key
+        ip_address = ip
+      }
+    }
+  ]...)
+
+  name                    = "${each.value.lb_key}-backend-${each.key}"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.this[each.value.lb_key].id
+  ip_address              = each.value.ip_address
+}
+
 resource "azurerm_lb_probe" "this" {
   for_each = var.load_balancers
 

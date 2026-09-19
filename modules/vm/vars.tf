@@ -6,7 +6,8 @@ variable "linux_virtual_machines" {
     location            = string
     size                = string
     admin_username      = string
-    admin_password      = string
+    admin_password      = optional(string, null)
+    admin_ssh_key       = optional(string, null)
     network_interface_id = string
     custom_data         = optional(string, null)
     os_disk = object({
