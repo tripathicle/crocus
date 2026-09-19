@@ -20,20 +20,51 @@ The design follows a hub-and-spoke pattern with a private application tier and a
 
 ### Traffic path
 
-```text
-Internet
-   ↓
-Application Gateway
-   ↓
-Frontend VMs
-   ↓
-Internal Load Balancer
-   ↓
-Backend VMs
-   ↓
-Private Endpoint
-   ↓
-Azure SQL
+# Architecture
+
+```mermaid
+flowchart TD
+    Internet([INTERNET])
+
+    AppGW["Application Gateway<br/>[Public IP]"]
+
+    subgraph FrontendSubnet["Frontend Subnet"]
+        FE1["Frontend VM 01"]
+        FE2["Frontend VM 02"]
+    end
+
+    ILB["Internal Load Balancer<br/>[Private IP]"]
+
+    subgraph BackendSubnet["Backend Subnet"]
+        BE1["Backend VM 01"]
+        BE2["Backend VM 02"]
+    end
+
+    PE["Private Endpoint"]
+    SQL[("Azure SQL")]
+
+    Internet --> AppGW
+    AppGW --> FE1
+    AppGW --> FE2
+    FE1 --> ILB
+    FE2 --> ILB
+    ILB --> BE1
+    ILB --> BE2
+    BE1 --> PE
+    BE2 --> PE
+    PE --> SQL
+
+    style Internet fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    style AppGW fill:#4dabf7,stroke:#1864ab,color:#fff
+    style ILB fill:#4dabf7,stroke:#1864ab,color:#fff
+    style FE1 fill:#69db7c,stroke:#2b8a3e,color:#fff
+    style FE2 fill:#69db7c,stroke:#2b8a3e,color:#fff
+    style BE1 fill:#ffd43b,stroke:#e67700,color:#000
+    style BE2 fill:#ffd43b,stroke:#e67700,color:#000
+    style PE fill:#b197fc,stroke:#5f3dc4,color:#fff
+    style SQL fill:#ffa94d,stroke:#d9480f,color:#fff
+    style FrontendSubnet fill:#e7f5ff,stroke:#4dabf7,stroke-dasharray: 5 5
+    style BackendSubnet fill:#fff9db,stroke:#ffd43b,stroke-dasharray: 5 5
 ```
 
 This is the actual request path. The App Gateway and the Internal Load Balancer are the traffic path components. The private endpoint is the private access point to Azure SQL, not a network hop in the same sense as a load balancer.
@@ -63,19 +94,52 @@ The Internal Load Balancer (ILB) is private-only and is used to distribute traff
 
 NSGs are security policy attachments, not traffic hops.
 
-```text
-Frontend Subnet
-   ↓
-Frontend NSG
+```mermaid
+flowchart TD
+    Internet([Internet])
+    AppGW["Application Gateway"]
+    Frontend["Frontend VMs"]
+    ILB["Internal Load Balancer"]
+    Backend["Backend VMs"]
+    PE["Private Endpoint"]
+    SQL[("Azure SQL")]
 
-Backend Subnet
-   ↓
-Backend NSG
-
-Private Endpoint Subnet
-   ↓
-Data NSG
+    Internet --> AppGW
+    AppGW --> Frontend
+    Frontend --> ILB
+    ILB --> Backend
+    Backend --> PE
+    PE --> SQL
 ```
+```mermaid
+flowchart LR
+    FESubnet["Frontend Subnet"]
+    FENSG["Frontend NSG"]
+    BESubnet["Backend Subnet"]
+    BENSG["Backend NSG"]
+    PESubnet["Private Endpoint Subnet"]
+    DataNSG["Data NSG"]
+
+    FESubnet -->|filters traffic for resources in this subnet| FENSG
+    BESubnet -->|filters traffic for resources in this subnet| BENSG
+    PESubnet -->|filters traffic associated with PE subnet| DataNSG
+```
+### SECURITY / NSG ASSOCIATION
+
+```mermaid
+flowchart LR
+    FESubnet["Frontend Subnet"] --> FENSG["Frontend NSG"]
+    BESubnet["Backend Subnet"] --> BENSG["Backend NSG"]
+    PESubnet["Private Endpoint Subnet"] --> DataNSG["Data / Private-Endpoint NSG"]
+
+    style FESubnet fill:#e7f5ff,stroke:#4dabf7,color:#000
+    style BESubnet fill:#fff9db,stroke:#ffd43b,color:#000
+    style PESubnet fill:#f3f0ff,stroke:#b197fc,color:#000
+    style FENSG fill:#4dabf7,stroke:#1864ab,color:#fff
+    style BENSG fill:#ffd43b,stroke:#e67700,color:#000
+    style DataNSG fill:#b197fc,stroke:#5f3dc4,color:#fff
+```
+
 
 This means:
 - App Gateway / ILB = path
@@ -84,14 +148,29 @@ This means:
 
 ### Private administration flow
 
-```text
-Administrator
-     ↓
-Azure Bastion
-     ↓
-Private IP
-     ↓
-VM
+`### Administrator Access via Azure Bastion
+
+```mermaid
+flowchart TD
+    Admin(["👤 Administrator"])
+    Portal["Azure Portal /<br/>Bastion Client"]
+    Bastion["Azure Bastion"]
+    PrivateIP["VM's Private IP"]
+    Protocol["SSH / RDP"]
+    VM["VM"]
+
+    Admin --> Portal
+    Portal --> Bastion
+    Bastion --> PrivateIP
+    PrivateIP --> Protocol
+    Protocol --> VM
+
+    style Admin fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    style Portal fill:#4dabf7,stroke:#1864ab,color:#fff
+    style Bastion fill:#b197fc,stroke:#5f3dc4,color:#fff
+    style PrivateIP fill:#69db7c,stroke:#2b8a3e,color:#fff
+    style Protocol fill:#ffd43b,stroke:#e67700,color:#000
+    style VM fill:#ffa94d,stroke:#d9480f,color:#fff
 ```
 
 This is the reason Bastion is deployed in the hub: it provides a secure, controlled admin entry path to private workloads without exposing the workload tier directly to the internet.
@@ -140,6 +219,8 @@ The same reusable child modules are consumed by each environment with environmen
 ├── .azuredevops/
 ├── .github/
 └── docs/
+
+
 ```
 
 ## Key Terraform modules
@@ -158,7 +239,7 @@ The project is built with reusable child modules including:
 - `modules/monitoring` – Log Analytics, Application Insights, and Azure Monitor integration
 - `modules/sa` – storage account provisioning
 - `modules/rg` – resource group provisioning
-- `modules/security` – security-focused configuration and policy-aligned controls
+- `modules/security` – security-focused configuration and policy-aligned controls -key-vault
 - `modules/private-access` – private DNS and private endpoint patterns
 
 The parent environment configuration in `env/dev/main.tf` wires these modules together.
