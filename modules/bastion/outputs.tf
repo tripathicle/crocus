@@ -1,9 +1,3 @@
-output "bastions" {
-  description = "Map of Azure Bastion hosts"
-  value = {
-    for key, bastion in azurerm_bastion_host.this : key => {
-      id   = bastion.id
-      name = bastion.name
-    }
-  }
-}
+output "id" { value = azurerm_bastion_host.this.id }
+output "name" { value = azurerm_bastion_host.this.name }
+output "public_ip_id" { value = azurerm_public_ip.this.id }
