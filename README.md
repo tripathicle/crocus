@@ -1,318 +1,232 @@
-# Crocus Terraform Azure Infrastructure
+# Crocus — Enterprise Azure Landing Zone (Terraform)
 
-Crocus is a Terraform-based Azure infrastructure repository built for a secure hub-and-spoke architecture in the `japaneast` region. The project is organized around reusable child modules and environment-specific inputs so deployment logic can be reused across `dev`, `stage`, and `prod` without duplicating infrastructure code.
+Crocus is a modular, multi-environment Azure Landing Zone built with Terraform. It deploys **1 Hub + N Spokes**, with HA, backup, DR, monitoring, and one-click deployment. It is designed so **any 3-tier monolithic application** (Presentation / Application / Data) can run on top of it without changing the infrastructure code.
 
-## Purpose
+> **You could not view the attached image in this session**, so the IP flow below uses the real subnets defined in this repo (Hub `10.0.0.0/16`, Spoke `10.10.0.0/16`). Replace the example IPs with your deployed outputs if they differ.
 
-This repository is designed to provision a repeatable Azure landing zone and application platform. It supports:
+## 1. What gets deployed
 
-- hub-and-spoke network segregation
-- public ingress through an Application Gateway
-- secure administrative access through Bastion
-- frontend and backend workload tiers
-- internal traffic distribution with a load balancer
-- centralized monitoring with Log Analytics and Application Insights
-- modular Terraform structure for reuse and maintenance
+- `scripts/` — one-click deployer + tfstate snapshot
+- `policies/opa/` — OPA guardrails (deny public endpoints, protect stateful prod)
+- `modules/` — 17 atomic child modules (5 files each)
+- `environments/{prod,preprod,uat,test}/` — 4 isolated root stacks × 4 layers
 
-## Architecture overview
+Layers (run in order):
 
-The design follows a hub-and-spoke pattern with a private application tier and a public entry point.
+1. `01-management-and-monitoring` — Log Analytics, App Insights, Sentinel, Key Vault
+2. `02-connectivity-hub` — Hub VNet, Firewall, Bastion, Private DNS
+3. `03-monolith-spokes` — dynamically deploys `erp-core`, `billing-suite`, `customer-portal` spokes (primary + DR via `flatten()`)
+4. `04-global-edge-and-dr` — App Gateway WAF, Front Door, Backup Vault, SQL Failover Group
 
-### Traffic path
+## 2. Traffic flow (how a user request travels)
 
-```text
-Internet
-   ↓
-Application Gateway
-   ↓
-Frontend VMs
-   ↓
-Internal Load Balancer
-   ↓
-Backend VMs
-   ↓
-Private Endpoint
-   ↓
-Azure SQL
+```mermaid
+flowchart TD
+    U["User / Browser<br/>public Internet"] --> FD["Azure Front Door (Global)<br/>Public anycast IP"]
+    FD --> APPGW["Application Gateway WAF_v2<br/>Public IP: 20.x.x.x<br/>Private IP: 10.0.0.10"]
+    APPGW -->|"HTTPS 443"| APP["App Tier (Web App / VMSS)<br/>Private IP: 10.10.1.10<br/>Subnet: snet-app 10.10.1.0/24"]
+    APP --> ILB["Internal Load Balancer<br/>Private IP: 10.10.1.4"]
+    ILB --> BE["Backend VMSS instances<br/>Private IP: 10.10.1.20-10.10.1.40"]
+    BE --> PE_SQL["Private Endpoint (SQL)<br/>Private IP: 10.10.2.4"]
+    PE_SQL --> SQL["Azure SQL (PaaS)<br/>No public access"]
+    BE --> PE_REDIS["Private Endpoint (Redis)<br/>Private IP: 10.10.2.5"]
+    BE --> PE_KV["Private Endpoint (Key Vault)<br/>Private IP: 10.10.2.6"]
+    BE --> PE_ST["Private Endpoint (Storage)<br/>Private IP: 10.10.2.7"]
+
+    subgraph Hub["Hub VNet 10.0.0.0/16"]
+        FW["Azure Firewall<br/>Private IP: 10.0.0.4"]
+        BAS["Azure Bastion<br/>Public IP: 20.x.x.y<br/>Private IP: 10.0.1.4"]
+    end
+    APP -. "egress via firewall" .-> FW
+
+    Admin["Administrator"] --> BAS
+    BAS -->|"SSH/RDP over private IP"| APP
 ```
 
-This is the actual request path. The App Gateway and the Internal Load Balancer are the traffic path components. The private endpoint is the private access point to Azure SQL, not a network hop in the same sense as a load balancer.
+### IP / subnet plan
 
-All application VMs use private IP addresses only. There is no public IP assigned to the frontend VMs, backend VMs, database tier, or the internal load balancer.
+| Component | Subnet / IP | Notes |
+|---|---|---|
+| Hub VNet | `10.0.0.0/16` | Shared connectivity |
+| AzureFirewallSubnet | `10.0.0.0/26` | Firewall private IP `10.0.0.4` |
+| AzureBastionSubnet | `10.0.1.0/26` | Bastion private IP `10.0.1.4` |
+| Spoke VNet | `10.10.0.0/16` | Per-monolith spoke |
+| snet-app | `10.10.1.0/24` | App tier (web apps / VMSS) |
+| snet-db | `10.10.2.0/24` | Private endpoints for SQL/Redis/KV/Storage |
+| SQL private endpoint | `10.10.2.4` | No public SQL endpoint |
+| Redis private endpoint | `10.10.2.5` | |
+| Key Vault private endpoint | `10.10.2.6` | |
+| Storage private endpoint | `10.10.2.7` | |
 
-### Hub layer
-- Azure Bastion for secure administrative access
-- shared connectivity services
-- optional Azure Firewall, VPN, or ExpressRoute components for future enterprise connectivity
+### Security rules (NSGs are boundaries, not hops)
 
-### Spoke layer
-- Application Gateway in the application/spoke VNet
-- frontend subnet
-- backend subnet
-- database/private access subnet
-- internal Load Balancer
-- application workloads and private services
-
-This separation keeps the hub focused on shared connectivity and administration, while the spoke carries the application runtime and data path.
-
-### Internal Load Balancer
-
-The Internal Load Balancer (ILB) is private-only and is used to distribute traffic between backend VMs. It has a private frontend IP and is not internet-facing. Frontend VMs communicate with the ILB over private networking, which keeps application traffic off the public internet.
-
-### Security model
-
-NSGs are security policy attachments, not traffic hops.
-
-```text
-Frontend Subnet
-   ↓
-Frontend NSG
-
-Backend Subnet
-   ↓
-Backend NSG
-
-Private Endpoint Subnet
-   ↓
-Data NSG
+```
+Internet -> App Gateway -> (Frontend NSG) -> App Tier -> (Backend NSG) -> Data tier -> (Data NSG) -> Private Endpoints -> Azure SQL
 ```
 
-This means:
-- App Gateway / ILB = path
-- NSG = security rule boundary
-- Private Endpoint = private connectivity to Azure SQL
+- Only **2 public IPs** exist: App Gateway + Bastion.
+- No public IP on VMs, ILB, SQL, Redis, Storage, Key Vault.
+- All data access is over private endpoints + private DNS zones.
 
-### Private administration flow
+## 3. Step-by-step: run ANY 3-tier monolithic app on this infra
 
-```text
-Administrator
-     ↓
-Azure Bastion
-     ↓
-Private IP
-     ↓
-VM
-```
+### Step 0 — Prerequisites
 
-This is the reason Bastion is deployed in the hub: it provides a secure, controlled admin entry path to private workloads without exposing the workload tier directly to the internet.
+1. Azure subscription + `az login`.
+2. Terraform >= 1.10 installed.
+3. A resource group + storage account for tfstate (see `backend.tf`).
 
-## Environment structure
-
-The repository separates deployment logic by environment:
-
-```text
-env/
-├── dev/
-├── stage/
-└── prod/
-```
-
-The same reusable child modules are consumed by each environment with environment-specific inputs. This keeps the landing zone consistent while allowing each environment to vary in naming, sizing, and policy requirements.
-
-## Root structure
-
-```text
-.
-├── README.md
-├── LICENSE
-├── backend.tf
-├── env/
-│   ├── dev/
-│   ├── stage/
-│   └── prod/
-├── modules/
-│   ├── app/
-│   ├── bastion/
-│   ├── gateway/
-│   ├── lb/
-│   ├── monitoring/
-│   ├── network/
-│   ├── nic/
-│   ├── nsg/
-│   ├── nsg-association/
-│   ├── private-access/
-│   ├── public-ip/
-│   ├── rg/
-│   ├── sa/
-│   ├── security/
-│   └── vm/
-├── credential_example/
-├── .azuredevops/
-├── .github/
-└── docs/
-```
-
-## Key Terraform modules
-
-The project is built with reusable child modules including:
-
-- `modules/network` – VNets, subnets, and VNet peering
-- `modules/nsg` – security group definitions
-- `modules/nsg-association` – subnet-to-NSG mapping
-- `modules/nic` – NIC creation for VMs
-- `modules/vm` – Linux VM deployment
-- `modules/lb` – internal load balancing
-- `modules/gateway` – Application Gateway
-- `modules/bastion` – Azure Bastion
-- `modules/public-ip` – public IP allocation
-- `modules/monitoring` – Log Analytics, Application Insights, and Azure Monitor integration
-- `modules/sa` – storage account provisioning
-- `modules/rg` – resource group provisioning
-- `modules/security` – security-focused configuration and policy-aligned controls
-- `modules/private-access` – private DNS and private endpoint patterns
-
-The parent environment configuration in `env/dev/main.tf` wires these modules together.
-
-## Current resource design
-
-The active Terraform state includes:
-
-- resource groups
-- storage account
-- hub and spoke VNets
-- dedicated subnets for application routing and workload separation
-- VNet peering
-- NSGs and subnet associations
-- NICs
-- 4 Linux VMs (`Standard_F1als_v7`) configured as:
-  - 2 frontend VMs
-  - 2 backend VMs
-- a managed SQL database/data service in the application/data path
-- 2 public IPs
-- 1 Application Gateway
-- 1 Bastion host
-- 1 internal load balancer
-- Log Analytics Workspace, Application Insights, and Azure Monitor-related telemetry resources
-
-There is no separate database VM in the current Terraform state, so the database/data tier is represented by the SQL resource layer rather than a dedicated database VM.
-
-## NSG flow
-
-The network security pattern is explicit, but NSGs are not traffic hops.
-
-```text
-Internet
-   ↓
-Application Gateway
-   ↓
-Frontend VMs
-   ↓
-Internal Load Balancer
-   ↓
-Backend VMs
-   ↓
-Private Endpoint
-   ↓
-Azure SQL
-```
-
-In parallel, the subnet security policy is applied as:
-
-```text
-Frontend Subnet → Frontend NSG
-Backend Subnet → Backend NSG
-Private Endpoint Subnet → Data NSG
-```
-
-This enforces least-privilege segmentation. Direct Internet-to-backend or Internet-to-database access is not intended.
-
-## Public IP usage
-
-The current design contains exactly two public IPs:
-
-- 1 Public IP → Application Gateway
-- 1 Public IP → Azure Bastion
-
-The following are intentionally not public:
-
-- No public IP on frontend VMs
-- No public IP on backend VMs
-- No public IP on database VM
-- No public IP on the internal Load Balancer
-
-## Key Vault and secret handling
-
-A Key Vault pattern is part of the intended security design for the platform. Application and database secrets should not be stored directly in Terraform `.tfvars` files. Secrets should be managed through Azure Key Vault and referenced via secure configuration patterns, RBAC, and managed identities where applicable.
-
-The repository contains the `modules/security` and `modules/private-access` patterns, and the dedicated `modules/key-vault` module is now part of the secure architecture for this landing zone.
-
-## Monitoring and observability
-
-The monitoring design includes:
-
-- Log Analytics Workspace
-- Application Insights
-- Azure Monitor
-- Metric alerts
-- Log alerts
-- Action Groups
-
-This allows centralized diagnostics, application telemetry, alerting, and operational visibility across the landing zone.
-
-## VNet peering
-
-The hub and spoke VNets are peered through the `modules/network` module. The module loops through all VNets and creates a peering relationship for each pair, enabling communication between shared hub services and spoke workloads while keeping the boundary clear and reusable.
-
-## Backend configuration
-
-Terraform remote state is configured in `backend.tf`. It uses Azure Storage as the backend and requires real storage values before an actual environment deployment.
-
-## Production considerations
-
-For a production-ready deployment, the following should be considered and implemented where supported:
-
-- private-only VM networking
-- Key Vault integration and secret management
-- Azure Monitor, alerts, and Action Groups
-- backup and disaster recovery strategy
-- zone redundancy / multi-AZ deployment for supported resources
-- RBAC and least-privilege access
-- managed identities
-- Azure Policy enforcement
-- Defender for Cloud protections
-- private endpoints where applicable
-
-These are production hardening patterns and should be evaluated against the final Azure landing zone design, not assumed as fully implemented in every module unless explicitly configured in code.
-
-## Typical workflow
+### Step 1 — Deploy the landing zone
 
 ```bash
-cd env/dev
-terraform init
-terraform validate
-terraform plan
-terraform apply
+./scripts/deploy-one-click.sh prod
 ```
 
-## Deployment notes
+This runs layers 01 → 04 in order. Wait for completion (≈ 20–40 min).
 
-- The project targets Azure resources in `japaneast`
-- The code is modular and environment-aware
-- Some services are intentionally left as placeholders or commented modules until the real Azure environment is configured
-- Real Azure backend values, subscription context, and credentials must be filled in before a live deployment
+### Step 2 — Map your 3 tiers to the infra
 
-## Summary
+| Your app tier | Where it runs in Crocus | Module used |
+|---|---|---|
+| **Presentation (UI / web)** | Azure App Service (or VMSS) in spoke `snet-app` | `compute-app-service` / `compute-vmss` |
+| **Application (business logic)** | Same app tier (monolith) OR separate VMSS pool behind ILB | `compute-app-service` / `compute-vmss` + `lb` |
+| **Data (DB / cache / files)** | Azure SQL + Redis + Storage via private endpoints | `database-sql` / `database-postgres` + `redis-cache` + `storage-account` + `private-endpoint` |
 
-Crocus is a modular Azure Terraform project for creating a secure hub-and-spoke infrastructure with a public ingress point, private application tiers, internal traffic distribution, monitoring, and reusable environment-driven deployment logic. The intended pattern is a three-tier application design in which the hub hosts shared admin and connectivity services, while the spoke contains the Application Gateway, frontend tier, backend tier, and data services behind private networking.
+### Step 3 — Configure the app (no secrets in code)
 
-## Typical workflow
+1. Create a Key Vault secret for your DB password (or use the ephemeral one generated by `database-sql`).
+2. Grant the web app a **System-assigned Managed Identity**.
+3. Give that identity `Key Vault Secrets User` on the vault.
+4. In App Service → Configuration, add:
+   - `SQL_CONNECTION_STRING` = `Server=tcp:<sql-fqdn>,1433;Database=appdb;...` (FQDN from `database-sql` output `server_fqdn`)
+   - `REDIS_HOST` = output of `redis-cache` (`hostname`)
+   - `STORAGE_ACCOUNT` = output of `storage-account` (`name`)
+
+### Step 4 — Connect networking (private only)
+
+1. Peer spoke VNet ↔ hub VNet (already wired via `networking-vnet` peering inputs).
+2. Create `private-endpoint` for SQL/Redis/KV/Storage in `snet-db`, linked to the `private-dns` zones.
+3. Set App Service **VNet integration** to `snet-app` so outbound traffic stays private.
+4. Route egress through the Firewall (UDRs) — default `Deny` on NSGs.
+
+### Step 5 — Deploy your application code
 
 ```bash
-cd env/dev
-terraform init
-terraform validate
-terraform plan
-terraform apply
+# Example: deploy a containerized monolith to App Service
+az webapp config container set --name app-erp-core-prod --resource-group rg-spoke-erp-core-prod \
+  --docker-custom-image-name myregistry.azurecr.io/monolith:latest
 ```
 
-## Deployment notes
+Or push code via GitHub Actions / Azure DevOps to the web app. The infra does not care about language (Node, Java, .NET, Python) — it just hosts it.
 
-- The project targets Azure resources in `japaneast`
-- The code is modular and environment-aware
-- Some services are intentionally left as placeholders or commented modules until the real Azure environment is configured
-- Real Azure backend values, subscription context, and credentials must be filled in before a live deployment
+### Step 6 — Expose to users
 
-## Summary
+1. Front Door origin = App Gateway public IP.
+2. App Gateway backend pool = App Service (or ILB private IP for VMSS).
+3. WAF policy (OWASP 3.2) blocks common attacks automatically.
+4. Custom domain + TLS cert on Front Door.
 
-Crocus is a modular Azure Terraform project for creating a secure hub-and-spoke infrastructure with ingress, frontend/backend workload tiers, internal distribution, monitoring, and reusable environment-driven deployment logic. It is structured to grow into a more complete enterprise platform while keeping the infrastructure code organized and reusable.
+### Step 7 — Observe & operate
 
+- Logs/metrics → `monitoring-observability` (Log Analytics + App Insights).
+- Alerts → Action Groups (configure email/Teams).
+- Backups → `backup-vault` (Recovery Services Vault) covers SQL/VMs.
+- DR → SQL Failover Group auto-failovers to `southindia` (prod/preprod only; uat/test have `enable_dr = false`).
+
+### Step 8 — Non-prod / test teardown
+
+- `test` env uses burstable SKUs and **no delete locks** → safe to `terraform destroy`.
+- `prod` has `CanNotDelete` locks + `prevent_destroy = true` on stateful resources → destroy is blocked by design.
+
+## 4. One-click commands
+
+```bash
+# Deploy
+./scripts/deploy-one-click.sh <env>          # env = prod | preprod | uat | test
+
+# Snapshot tfstate before apply
+./scripts/backup-tfstate.sh <env> <layer>
+
+# Format / validate
+terraform fmt -recursive
+```
+
+## 5. Risks / things to finish before go-live
+
+- Peering + private-endpoint wiring between layers is scaffolded; pass real IDs from layer outputs.
+- Storage account names use truncated region prefixes — verify uniqueness.
+- `test` env has `prevent_destroy = true` on DB/storage (blocks destroy; remove if needed).
+- Backend storage account must exist before `terraform init`.
+- OPA policies are advisory until wired into CI.
+
+## 6. Hosting the AgriKart application (https://github.com/tripathicle/Agrikart)
+
+AgriKart is a **3-tier monolithic-ish (microservices) app**: React + TypeScript + Vite frontend, Node.js/Express backend, MySQL database, plus OpenWeatherMap API.
+
+### 6.1 Tier → Crocus mapping
+
+| AgriKart component | Tier | Runs on Crocus | Module |
+|---|---|---|---|
+| React + TS + Vite UI (marketplace, tractor booking, milk requests, weather, login) | Presentation | Azure App Service (Linux, Node 20) in spoke `snet-app` | `compute-app-service` |
+| Node/Express microservices (product catalog, rentals, milk requests, weather, auth/JWT) | Application | Same App Service (monolith) OR separate VMSS pool behind Internal LB | `compute-app-service` / `compute-vmss` + `lb` |
+| MySQL (users/roles, products, orders, rentals, payments) | Data | Azure Database for MySQL Flexible Server via private endpoint (module to be added; until then use `database-postgres` adapted or a MySQL VMSS) | `private-endpoint` + `private-dns` |
+| Redis session/cache | Data | Azure Cache for Redis (Premium, private) | `redis-cache` |
+| Product images / uploads | Data | Storage Account containers (`data`, `logs`) | `storage-account` |
+| Secrets (JWT secret, DB creds, OpenWeatherMap key) | Data | Key Vault | `key-vault` |
+
+### 6.2 Step-by-step to host AgriKart
+
+1. **Deploy infra**: `./scripts/deploy-one-click.sh prod` (or `test` for dev).
+2. **Provision MySQL**: create Azure Database for MySQL Flexible Server in `snet-db` (private endpoint). Run AgriKart SQL migrations (`backend/` schema).
+3. **Build frontend**:
+   ```bash
+   cd agrikart/project
+   npm ci
+   npm run build   # outputs to dist/
+   ```
+4. **Deploy frontend** to App Service:
+   ```bash
+   az webapp deploy --resource-group rg-spoke-erp-core-prod --name app-erp-core-prod \
+     --src-path dist --type zip
+   ```
+   Or containerize with Docker and push to ACR, then set App Service to pull the image.
+5. **Deploy backend** (Node/Express) as a second App Service or as a container in the same spoke; expose `/api/*` via App Gateway path-based routing.
+6. **Configure app settings** (no secrets in repo):
+   - `DB_HOST`, `DB_USER`, `DB_PASSWORD` (from Key Vault), `DB_NAME=agrikart`
+   - `JWT_SECRET` (from Key Vault)
+   - `OPENWEATHER_API_KEY` (from Key Vault)
+   - `REDIS_HOST`, `STORAGE_ACCOUNT`
+7. **Networking**: VNet-integrate App Service to `snet-app`; private endpoints for MySQL/Redis/KV/Storage in `snet-db`; egress via Firewall; NSGs deny public.
+8. **CI/CD**: use GitHub Actions (already planned in AgriKart) to build + deploy on push to `main`; store Azure creds in GitHub Secrets, not in repo.
+9. **Observe**: enable App Insights SDK in the Node app (`APPLICATIONINSIGHTS_CONNECTION_STRING`); logs flow to Log Analytics.
+10. **Weather API egress**: allow outbound 443 to OpenWeatherMap through the Firewall (application rule).
+
+### 6.3 AgriKart-specific notes
+
+- The frontend uses Vite → serve the `dist/` static bundle from App Service (or Front Door origin).
+- JWT auth → keep `JWT_SECRET` only in Key Vault; rotate via Key Vault versioning.
+- MySQL normalized schema (users/roles, products, orders, rentals, payments) → enable automated backups in Azure Database for MySQL + Recovery Services Vault.
+- Image uploads → Storage Account containers with private endpoints; generate SAS tokens via managed identity.
+- Tractor rental + milk request flows are stateful → enable `prevent_destroy` (already on) for their DB/storage.
+
+### 6.4 Local dev (unchanged)
+
+```bash
+git clone https://github.com/tripathicle/Agrikart
+cd Agrikart/project
+npm install
+npm run dev   # http://localhost:5173
+```
+
+Backend (Node) runs separately per its folder; point frontend Axios baseURL to `http://localhost:5000`.
+
+---
+
+## 7. Directory layout
+
+```
+├── scripts/
+├── policies/opa/
+├── modules/        # 17 atomic modules
+└── environments/   # prod, preprod, uat, test × 4 layers
+```
