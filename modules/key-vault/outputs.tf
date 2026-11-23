@@ -1,10 +1,3 @@
-output "key_vaults" {
-  description = "Map of created Key Vault metadata"
-  value = {
-    for key, kv in azurerm_key_vault.this : key => {
-      id   = kv.id
-      name = kv.name
-      vault_uri = kv.vault_uri
-    }
-  }
-}
+output "id" { value = azurerm_key_vault.this.id }
+output "name" { value = azurerm_key_vault.this.name }
+output "vault_uri" { value = azurerm_key_vault.this.vault_uri }
